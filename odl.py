@@ -1,5 +1,5 @@
 """
-(c) 2021 Yogesh Khatri, @SwiftForensics 
+(c) 2021 Yogesh Khatri, @SwiftForensics
 
 Read OneDrive .ODL files
 ------------------------
@@ -109,7 +109,7 @@ def guess_encoding(obfuscation_map_path):
     encoding = 'utf-16le' # on windows this is the default
     with open(obfuscation_map_path, 'rb') as f:
         data = f.read(4)
-        if len(data) == 4: 
+        if len(data) == 4:
             if data[1] == 0 and data[3] == 0 and data[0] != 0 and data[2] != 0:
                 pass # confirmed utf-16le
             else:
@@ -124,11 +124,11 @@ def decrypt(cipher_text):
     '''cipher_text is expected to be base64 encoded'''
     global key
     global utf_type
-    
+
     if key == '':
         return ""
     if len(cipher_text) < 22:
-        return "" # invalid 
+        return "" # invalid
     # add proper base64 padding
     remainder = len(cipher_text) % 4
     if remainder == 1:
@@ -140,7 +140,7 @@ def decrypt(cipher_text):
         cipher_text = base64.b64decode(cipher_text)
     except:
         return ""
-    
+
     if len(cipher_text) % 16 != 0:
         return ""
     else:
@@ -189,7 +189,7 @@ def read_obfuscation_map(obfuscation_map_path, store_all_key_values):
             line = line.rstrip('\n')
             terms = line.split('\t')
             if len(terms) == 2:
-                if terms[0] in map: #REPEATED item found!  
+                if terms[0] in map: #REPEATED item found!
                     repeated_items_found = True
                     if not store_all_key_values:
                         continue # newer items are on top, skip older items found below.
@@ -212,7 +212,7 @@ def read_obfuscation_map(obfuscation_map_path, store_all_key_values):
     if repeated_items_found:
         print('WARNING: Multiple instances of some keys were found in the ObfuscationMap.')
     return map
-    
+
 def tokenized_replace(string, map):
     output = ''
     tokens = ':\\.@%#&*|{}!?<>;:~()//"\''
@@ -240,7 +240,7 @@ def tokenized_replace(string, map):
         parts.append((last_token, 0))
     if last_word:
         parts.append((last_word, 1))
-    
+
     # now join all parts replacing the words
     for part in parts:
         if part[1] == 0: # token
@@ -368,6 +368,16 @@ def process_odl(path, map, show_all_data):
             header = f.read(56) # next cdef header
     return odl_rows
 
+def csv_file_and_writer(csv_file_path, sequence = None):
+    if sequence != None and sequence > 0:
+        basename = csv_file_path[0:-4]
+        csv_file_path = f"{basename}.{sequence}.csv"
+    fieldnames = 'Filename,File_Index,Timestamp,Code_File,Function,Params_Decoded'.split(',')
+    csv_f = open(csv_file_path, 'w', encoding='UTF8', newline='' )
+    writer = csv.DictWriter(csv_f, fieldnames=fieldnames, escapechar="\\")
+    writer.writeheader()
+    return [ csv_f, writer ]
+
 def main():
     usage = \
     """
@@ -388,15 +398,22 @@ By default, irrelevant functions and/or those with empty parameters
 are not displayed. This can be toggled with the -d option.
     """
 
-    parser = argparse.ArgumentParser(description='OneDrive Log (ODL) reader', epilog=usage, 
+    parser = argparse.ArgumentParser(description='OneDrive Log (ODL) reader', epilog=usage,
                 formatter_class=argparse.RawTextHelpFormatter)
     parser.add_argument('odl_folder', help='Path to folder with .odl files')
+    parser.add_argument('--linesep', default="\n", help='defaults to a quoted \\n')
+    parser.add_argument('--max-rows', default=2E+5, help='Make potentially many CSVs, replacing .csv suffix with .N.csv.')
     parser.add_argument('-o', '--output_path', help='Output file name and path')
     parser.add_argument('-s', '--obfuscationstringmap_path', help='Path to ObfuscationStringMap.txt (if not in odl_folder)')
     parser.add_argument('-k', '--all_key_values', action='store_true', help='For repeated keys in ObfuscationMap, get all values | delimited (off by default)')
     parser.add_argument('-d', '--all_data', action='store_true', help='Show all data (off by default)')
-    
+
     args = parser.parse_args()
+
+    os.linesep = args.linesep
+    max_rows = None
+    if args.max_rows != None and args.max_rows >= 2:
+        max_rows = args.max_rows
 
     odl_folder = os.path.abspath(args.odl_folder)
     csv_file_path = args.output_path
@@ -420,30 +437,47 @@ are not displayed. This can be toggled with the -d option.
     else:
         map = read_obfuscation_map(obfuscation_map_path, args.all_key_values)
         print(f'Read {len(map)} items from map')
-    
+
     keystore_path = os.path.join(odl_folder, "general.keystore")
     if not os.path.exists(keystore_path):
         print(f'"general.keystore" not found in {odl_folder}. WARNING: Strings will not be decoded!!')
     else:
         read_keystore(keystore_path)
 
-    try:
-        fieldnames = 'Filename,File_Index,Timestamp,Code_File,Function,Params_Decoded'.split(',')
-        csv_f = open(csv_file_path, 'w', encoding='UTF8')
-        writer = csv.DictWriter(csv_f, fieldnames=fieldnames)
-        writer.writeheader()
-    except:
-        print(f"Failed to create csv file: {csv_file_path} ")
-        return
+
+    csv_f_arr = csv_file_and_writer(csv_file_path)
+    if csv_f_arr == None or len(csv_f_arr) != 2:
+        print(f'csv_f_arr was probably NoneType.')
+        return 0;
+
+    csv_f = csv_f_arr[0]
+    writer = csv_f_arr[1]
+
 
     glob_patterns = ('*.odl', '*.odlgz', '*.odlsent', '*.aodl')
     paths = []
     for pattern in glob_patterns:
         paths.extend(glob.glob(os.path.join(odl_folder, pattern)))
+
+    splitter = 0
+    sequence = 1
+
     for path in paths:
-        print("Searching ", path)
+        print("Searching ", path, flush=True)
         try:
             odl_rows = process_odl(path, map, args.all_data)
+            splitter += len(odl_rows)
+
+            if max_rows != None and splitter > max_rows:
+                sequence = sequence + 1
+                csv_f_arr = csv_file_and_writer(csv_file_path, sequence=sequence)
+                if csv_f_arr == None or len(csv_f_arr) != 2:
+                    print(f'csv_f_arr was probably NoneType.')
+                    return 0;
+                csv_f = csv_f_arr[0]
+                writer = csv_f_arr[1]
+                splitter = len(odl_rows)
+
             try:
                 writer.writerows(odl_rows)
                 print(f'Wrote {len(odl_rows)} rows')
@@ -451,9 +485,9 @@ are not displayed. This can be toggled with the -d option.
                 print("ERROR writing rows:", type(ex), ex)
         except OSError as ex:
             print(f"Error - File not found! {path}")
-        
+
     csv_f.close()
-    print(f'Finished processing files, output is at {csv_file_path}')
+    print(f'Finished processing files, output is at {csv_file_path[0:-4]}*csv')
 
 if __name__ == "__main__":
     main()
